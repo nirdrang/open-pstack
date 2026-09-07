@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { invocationCommand } from "./commands.ts";
+import {
+  invocationCommand,
+  preflightCommand,
+  verificationCommand,
+} from "./commands.ts";
 import type { RunnerOptions } from "./types.ts";
 
 function options(overrides: Partial<RunnerOptions> = {}): RunnerOptions {
@@ -113,6 +117,69 @@ describe("invocationCommand", () => {
     ]);
   });
 
+  it("bounds opencode through an injected agent and pins model and variant", () => {
+    const spec = invocationCommand(
+      options({ provider: "opencode", model: "opencode-go/kimi-k3" })
+    );
+    expect(spec.command).toBe("opencode");
+    expect(spec.stdin).toBe("prompt");
+    expect(spec.args).toEqual([
+      "run",
+      "--pure",
+      "--format",
+      "json",
+      "--model",
+      "opencode-go/kimi-k3",
+      "--variant",
+      "max",
+      "--agent",
+      "pstack-read-only",
+      "--dir",
+      "/tmp/worktree",
+    ]);
+    expect(spec.args).not.toContain("--auto");
+    const config = JSON.parse(spec.env?.OPENCODE_CONFIG_CONTENT ?? "{}");
+    expect(config.agent["pstack-read-only"].permission).toMatchObject({
+      edit: "deny",
+      bash: "deny",
+      task: "deny",
+      webfetch: "deny",
+      websearch: "deny",
+      todowrite: "deny",
+      external_directory: "deny",
+    });
+
+    const writer = invocationCommand(
+      options({ provider: "opencode", model: "opencode-go/kimi-k3", mode: "isolated-write" })
+    );
+    expect(writer.args).toEqual(
+      expect.arrayContaining(["--agent", "pstack-isolated-write"])
+    );
+    const writerConfig = JSON.parse(writer.env?.OPENCODE_CONFIG_CONTENT ?? "{}");
+    expect(writerConfig.agent["pstack-isolated-write"].permission).toMatchObject({
+      edit: "allow",
+      bash: "allow",
+      task: "deny",
+      webfetch: "deny",
+    });
+  });
+
+  it("preflights opencode against its provider listing and verifies through export", () => {
+    expect(preflightCommand("opencode", "opencode-go/kimi-k3")).toEqual({
+      command: "opencode",
+      args: ["models", "opencode-go", "--verbose"],
+      stdin: "none",
+    });
+    expect(verificationCommand("opencode", "ses_1")).toEqual({
+      command: "opencode",
+      args: ["export", "ses_1"],
+      stdin: "none",
+    });
+    for (const provider of ["claude", "codex", "grok"] as const) {
+      expect(verificationCommand(provider, "ses_1")).toBeNull();
+    }
+  });
+
   it("uses bounded write modes without blanket bypasses", () => {
     const codex = invocationCommand(options({ mode: "isolated-write" }));
     expect(codex.args).toEqual(
@@ -168,6 +235,11 @@ describe("invocationCommand", () => {
           "--reasoning-effort",
           effort,
         ],
+      },
+      {
+        provider: "opencode" as const,
+        model: "opencode-go/gpt-5.6-luna",
+        flag: (effort: "low" | "medium" | "high") => ["--variant", effort],
       },
     ];
     for (const { provider, model, flag } of cases) {

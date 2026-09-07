@@ -9,10 +9,21 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { invocationCommand, preflightCommand, type CommandSpec } from "./commands.ts";
+import {
+  invocationCommand,
+  preflightCommand,
+  verificationCommand,
+  type CommandSpec,
+} from "./commands.ts";
 import { versionedClaudeAlias } from "./model-aliases.ts";
-import { parseProviderOutput, reportedModelMatches } from "./parse-output.ts";
+import {
+  opencodeModelListing,
+  parseOpencodeExport,
+  parseProviderOutput,
+  reportedModelMatches,
+} from "./parse-output.ts";
 import type {
+  ParsedOutput,
   Provider,
   ReceiptStatus,
   RunnerOptions,
@@ -226,7 +237,7 @@ async function runProcess(
 ): Promise<ProcessResult> {
   const child = Bun.spawn([executable, ...spec.args], {
     cwd,
-    env,
+    env: { ...env, ...spec.env },
     stdin: spec.stdin === "prompt" ? "pipe" : "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -350,10 +361,10 @@ async function waitForGrokPreflightRetry(
   }
 }
 
-function preflightPassed(provider: Provider, model: string, result: ProcessResult): boolean {
+function preflightPassed(options: RunnerOptions, result: ProcessResult): boolean {
   if (result.exitCode !== 0 || result.timedOut) return false;
   const combined = `${result.stdout}\n${result.stderr}`;
-  switch (provider) {
+  switch (options.provider) {
     case "claude": {
       try {
         const value: unknown = JSON.parse(result.stdout);
@@ -369,14 +380,39 @@ function preflightPassed(provider: Provider, model: string, result: ProcessResul
     case "codex":
       return /logged in/i.test(combined);
     case "grok":
-      return /logged in/i.test(combined) && combined.includes(model);
+      return /logged in/i.test(combined) && combined.includes(options.model);
+    case "opencode":
+      return opencodeModelListing(result.stdout, options.model, options.effort).kind === "listed";
   }
 }
 
-function successfulPreflightEvidence(provider: Provider, model: string): string {
-  return provider === "grok"
-    ? `authenticated; model ${model} available`
-    : "authenticated";
+function successfulPreflightEvidence(options: RunnerOptions): string {
+  switch (options.provider) {
+    case "grok":
+      return `authenticated; model ${options.model} available`;
+    case "opencode":
+      return `model ${options.model} lists variant ${options.effort}`;
+    default:
+      return "authenticated";
+  }
+}
+
+// The verbose listing is thousands of lines; the receipt keeps the one fact
+// that failed instead of a truncated dump.
+function failedPreflightEvidence(options: RunnerOptions, result: ProcessResult): string {
+  const raw = evidence(`${result.stdout}\n${result.stderr}`);
+  if (options.provider !== "opencode" || result.exitCode !== 0) return raw;
+  const listing = opencodeModelListing(result.stdout, options.model, options.effort);
+  switch (listing.kind) {
+    case "listed":
+      return raw;
+    case "missing-model":
+      return `model ${options.model} is not listed by opencode; check credentials and the model id`;
+    case "missing-variant":
+      return listing.variants.length === 0
+        ? `model ${options.model} registers no variants, so effort ${options.effort} cannot be applied`
+        : `effort ${options.effort} is not a registered variant of ${options.model}; registered: ${listing.variants.join(", ")}`;
+  }
 }
 
 function unavailableStatus(value: string): ReceiptStatus {
@@ -396,9 +432,16 @@ function preflightFailureStatus(
 ): ReceiptStatus {
   const status = unavailableStatus(value);
   if (status !== "child-failed") return status;
+  if (provider === "opencode") return "unavailable-model";
   return provider === "grok" && !value.includes(model)
     ? "unavailable-model"
     : "unauthenticated";
+}
+
+class VerificationInterrupted extends Error {
+  constructor(readonly status: "cancelled" | "timed-out", message: string) {
+    super(message);
+  }
 }
 
 function retriedPreflightEvidence(
@@ -489,6 +532,11 @@ export function validateOptions(options: RunnerOptions): void {
     );
   }
   if (options.model.trim().length === 0) throw new UsageError("model must not be empty");
+  if (options.provider === "opencode" && !/^[^/\s]+\/[^/\s]+$/.test(options.model)) {
+    throw new UsageError(
+      `opencode model ${options.model} must be written as <provider>/<model>, e.g. opencode-go/kimi-k3`
+    );
+  }
   const staleAlias = options.provider === "claude"
     ? versionedClaudeAlias(options.model)
     : null;
@@ -627,10 +675,10 @@ async function executeLane(
     deadlineAt,
     cancellation
   );
-  let rawPreflightEvidence = evidence(`${preflightResult.stdout}\n${preflightResult.stderr}`);
-  let passed = preflightPassed(options.provider, options.model, preflightResult);
+  let rawPreflightEvidence = failedPreflightEvidence(options, preflightResult);
+  let passed = preflightPassed(options, preflightResult);
   let preflightEvidence = passed
-    ? successfulPreflightEvidence(options.provider, options.model)
+    ? successfulPreflightEvidence(options)
     : rawPreflightEvidence;
 
   if (
@@ -671,13 +719,11 @@ async function executeLane(
       deadlineAt,
       cancellation
     );
-    rawPreflightEvidence = evidence(`${preflightResult.stdout}\n${preflightResult.stderr}`);
-    passed = preflightPassed(options.provider, options.model, preflightResult);
+    rawPreflightEvidence = failedPreflightEvidence(options, preflightResult);
+    passed = preflightPassed(options, preflightResult);
     preflightEvidence = retriedPreflightEvidence(
       firstPreflightEvidence,
-      passed
-        ? successfulPreflightEvidence(options.provider, options.model)
-        : rawPreflightEvidence,
+      passed ? successfulPreflightEvidence(options) : rawPreflightEvidence,
       passed
     );
   }
@@ -799,11 +845,18 @@ async function executeLane(
   }
 
   try {
-    const parsed = parseProviderOutput(
-      options.provider,
-      result.stdout,
-      result.stderr,
-      options.model
+    const parsed = await verifiedOutput(
+      options,
+      parseProviderOutput(
+        options.provider,
+        result.stdout,
+        result.stderr,
+        options.model
+      ),
+      executable,
+      env,
+      deadlineAt,
+      cancellation
     );
     const proof = modelProof(
       options.provider,
@@ -830,7 +883,7 @@ async function executeLane(
     removeIfExists(options.outputPath);
     receipt = completeReceipt(options, {
       ...base,
-      status: "malformed-output",
+      status: error instanceof VerificationInterrupted ? error.status : "malformed-output",
       reportedModel: null,
       modelVerified: false,
       modelEvidence: null,
@@ -848,6 +901,57 @@ async function executeLane(
   return { exitCode: statusExitCode(receipt.status), receipt };
 }
 
+// opencode's stream never names the served model. `opencode export` reads the
+// session back from the local store and records provider, model, and variant.
+async function verifiedOutput(
+  options: RunnerOptions,
+  parsed: ParsedOutput,
+  executable: string,
+  env: NodeJS.ProcessEnv,
+  deadlineAt: number | null,
+  cancellation: RunCancellation
+): Promise<ParsedOutput> {
+  if (parsed.sessionId === null) {
+    if (verificationCommand(options.provider, "") === null) return parsed;
+    throw new Error(`${options.provider} did not report a session id to verify the served model`);
+  }
+  const verification = verificationCommand(options.provider, parsed.sessionId);
+  if (verification === null) return parsed;
+  const result = await runProcess(
+    executable,
+    verification,
+    options.cwd,
+    env,
+    "",
+    deadlineAt,
+    cancellation
+  );
+  if (result.cancelledBy !== null) {
+    throw new VerificationInterrupted(
+      "cancelled",
+      `launcher received ${result.cancelledBy} during model verification`
+    );
+  }
+  if (result.timedOut) {
+    throw new VerificationInterrupted(
+      "timed-out",
+      `launcher exceeded the explicit ${options.timeoutMs}ms deadline during model verification`
+    );
+  }
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `model verification exited with status ${result.exitCode}: ${evidence(result.stderr)}`
+    );
+  }
+  const exported = parseOpencodeExport(result.stdout);
+  if (exported.variant !== options.effort) {
+    throw new Error(
+      `requested effort ${options.effort} was served as variant ${exported.variant ?? "none"}`
+    );
+  }
+  return { ...parsed, reportedModel: exported.reportedModel };
+}
+
 export async function runLane(
   options: RunnerOptions,
   started: number = Date.now()
@@ -855,7 +959,7 @@ export async function runLane(
   validateOptions(options);
   const deadlineAt = options.timeoutMs === null ? null : started + options.timeoutMs;
   const invocation = invocationCommand(options);
-  const preflight = preflightCommand(options.provider);
+  const preflight = preflightCommand(options.provider, options.model);
   const progress: LaneProgress = {
     executable: null,
     preflight: {

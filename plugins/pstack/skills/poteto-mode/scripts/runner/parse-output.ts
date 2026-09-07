@@ -157,6 +157,145 @@ function parseCodex(stdout: string): ParsedOutput {
   };
 }
 
+function addUsage(
+  total: NormalizedUsage | null,
+  next: NormalizedUsage | null
+): NormalizedUsage | null {
+  if (total === null) return next;
+  if (next === null) return total;
+  const sum = (a: number | undefined, b: number | undefined): number | undefined =>
+    a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
+  return {
+    inputTokens: sum(total.inputTokens, next.inputTokens),
+    cachedInputTokens: sum(total.cachedInputTokens, next.cachedInputTokens),
+    cacheCreationInputTokens: sum(
+      total.cacheCreationInputTokens,
+      next.cacheCreationInputTokens
+    ),
+    outputTokens: sum(total.outputTokens, next.outputTokens),
+    reasoningTokens: sum(total.reasoningTokens, next.reasoningTokens),
+    totalTokens: sum(total.totalTokens, next.totalTokens),
+  };
+}
+
+function opencodeStepUsage(value: unknown): NormalizedUsage | null {
+  const tokens = object(value);
+  if (tokens === null) return null;
+  const cache = object(tokens.cache);
+  return normalizedUsage({
+    input_tokens: tokens.input,
+    output_tokens: tokens.output,
+    reasoning_tokens: tokens.reasoning,
+    total_tokens: tokens.total,
+    cache_read_input_tokens: cache?.read,
+    cache_write_input_tokens: cache?.write,
+  });
+}
+
+// The stream carries text parts, per-step token counts, and the session id,
+// but never the served model. `parseOpencodeExport` supplies that afterwards.
+// The final answer is the last text part; earlier parts are tool narration.
+function parseOpencode(stdout: string, stderr: string): ParsedOutput {
+  if (/not found\. Falling back to default agent/.test(stderr)) {
+    throw new Error("opencode fell back to its default agent; the lane's access mode was not applied");
+  }
+  let text: string | null = null;
+  let sessionId: string | null = null;
+  let usage: NormalizedUsage | null = null;
+  let costUsd: number | null = null;
+
+  for (const line of stdout.split("\n")) {
+    if (line.trim().length === 0) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      throw new Error("opencode emitted a non-JSON event");
+    }
+    const event = object(raw);
+    if (event === null) continue;
+    sessionId = nullableString(event.sessionID) ?? sessionId;
+    const part = object(event.part);
+    if (event.type === "error") {
+      const error = object(event.error);
+      const data = object(error?.data);
+      throw new Error(
+        nullableString(data?.message) ?? nullableString(error?.name) ?? "opencode reported an error event"
+      );
+    }
+    if (event.type === "text" && part !== null) {
+      text = nullableString(part.text) ?? text;
+    }
+    if (event.type === "step_finish" && part !== null) {
+      usage = addUsage(usage, opencodeStepUsage(part.tokens));
+      const cost = finiteNumber(part.cost);
+      if (cost !== undefined) costUsd = (costUsd ?? 0) + cost;
+    }
+  }
+
+  if (text === null) throw new Error("opencode result did not contain a final text part");
+  return { text, reportedModel: null, sessionId, usage, costUsd };
+}
+
+export interface OpencodeExport {
+  readonly reportedModel: string;
+  readonly variant: string | null;
+}
+
+export function parseOpencodeExport(stdout: string): OpencodeExport {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout);
+  } catch {
+    throw new Error("opencode export did not emit valid JSON");
+  }
+  const info = object(object(raw)?.info);
+  const model = object(info?.model);
+  const providerId = nullableString(model?.providerID);
+  const modelId = nullableString(model?.id);
+  if (providerId === null || modelId === null) {
+    throw new Error("opencode export did not record the served model");
+  }
+  return {
+    reportedModel: `${providerId}/${modelId}`,
+    variant: nullableString(model?.variant),
+  };
+}
+
+export type OpencodeListing =
+  | { readonly kind: "listed" }
+  | { readonly kind: "missing-model" }
+  | { readonly kind: "missing-variant"; readonly variants: readonly string[] };
+
+// `opencode models <provider> --verbose` prints each model id on its own
+// line followed by its JSON record. An effort that is not a registered
+// variant is dropped silently at run time, so it is refused here instead.
+export function opencodeModelListing(
+  stdout: string,
+  model: string,
+  effort: string
+): OpencodeListing {
+  const lines = stdout.split(/\r?\n/);
+  const header = lines.findIndex((line) => line.trim() === model);
+  if (header < 0) return { kind: "missing-model" };
+  // The record is pretty-printed; only its own closing brace sits in column 0.
+  const block: string[] = [];
+  for (const line of lines.slice(header + 1)) {
+    block.push(line);
+    if (line === "}") break;
+  }
+  let record: unknown;
+  try {
+    record = JSON.parse(block.join("\n"));
+  } catch {
+    return { kind: "missing-variant", variants: [] };
+  }
+  const variants = Object.keys(object(object(record)?.variants) ?? {});
+  return variants.includes(effort)
+    ? { kind: "listed" }
+    : { kind: "missing-variant", variants };
+}
+
 export function parseProviderOutput(
   provider: Provider,
   stdout: string,
@@ -170,6 +309,8 @@ export function parseProviderOutput(
       return parseCodex(stdout);
     case "grok":
       return parseGrok(stdout, requestedModel);
+    case "opencode":
+      return parseOpencode(stdout, stderr);
   }
 }
 
@@ -182,6 +323,7 @@ export function reportedModelMatches(
   if (provider === "claude" && isRollingClaudeAlias(requested)) {
     return concreteModelMatchesRollingAlias(requested, reported);
   }
+  if (provider === "opencode") return reported === requested;
   if (reported === requested || reported.startsWith(`${requested}-`)) {
     return true;
   }

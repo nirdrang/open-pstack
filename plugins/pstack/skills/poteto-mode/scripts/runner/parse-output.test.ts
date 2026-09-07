@@ -1,5 +1,55 @@
 import { describe, expect, it } from "bun:test";
-import { parseProviderOutput, reportedModelMatches } from "./parse-output.ts";
+import {
+  opencodeModelListing,
+  parseOpencodeExport,
+  parseProviderOutput,
+  reportedModelMatches,
+} from "./parse-output.ts";
+
+const OPENCODE_STREAM = [
+  JSON.stringify({
+    type: "step_start",
+    sessionID: "ses_1",
+    part: { type: "step-start", messageID: "msg_1" },
+  }),
+  JSON.stringify({
+    type: "text",
+    sessionID: "ses_1",
+    part: { type: "text", messageID: "msg_1", text: "Looking at the file." },
+  }),
+  JSON.stringify({
+    type: "step_finish",
+    sessionID: "ses_1",
+    part: {
+      type: "step-finish",
+      reason: "tool-calls",
+      tokens: { total: 100, input: 90, output: 5, reasoning: 5, cache: { read: 10, write: 0 } },
+      cost: 0.01,
+    },
+  }),
+  JSON.stringify({
+    type: "text",
+    sessionID: "ses_1",
+    part: { type: "text", messageID: "msg_1", text: "OPENCODE_OK" },
+  }),
+  JSON.stringify({
+    type: "step_finish",
+    sessionID: "ses_1",
+    part: {
+      type: "step-finish",
+      reason: "stop",
+      tokens: { total: 50, input: 40, output: 8, reasoning: 2, cache: { read: 0, write: 0 } },
+      cost: 0.005,
+    },
+  }),
+].join("\n");
+
+const OPENCODE_LISTING = [
+  "opencode-go/kimi-k3",
+  JSON.stringify({ id: "kimi-k3", providerID: "opencode-go", variants: { max: { reasoningEffort: "max" } } }, null, 2),
+  "opencode-go/kimi-k2.6",
+  JSON.stringify({ id: "kimi-k2.6", providerID: "opencode-go" }, null, 2),
+].join("\n");
 
 describe("parseProviderOutput", () => {
   it("extracts Claude text, model, usage, cost, and session", () => {
@@ -92,6 +142,85 @@ describe("parseProviderOutput", () => {
     expect(reportedModelMatches("grok", "grok-4.6", parsed.reportedModel)).toBe(
       true
     );
+  });
+
+  it("extracts opencode's last text part, summed usage, and session without a model", () => {
+    const parsed = parseProviderOutput("opencode", OPENCODE_STREAM, "", "opencode-go/kimi-k3");
+    expect(parsed).toEqual({
+      text: "OPENCODE_OK",
+      reportedModel: null,
+      sessionId: "ses_1",
+      usage: {
+        inputTokens: 130,
+        cachedInputTokens: 10,
+        cacheCreationInputTokens: 0,
+        outputTokens: 13,
+        reasoningTokens: 7,
+        totalTokens: 150,
+      },
+      costUsd: 0.015,
+    });
+  });
+
+  it("fails an opencode lane whose agent fell back or whose stream errored", () => {
+    expect(() =>
+      parseProviderOutput(
+        "opencode",
+        OPENCODE_STREAM,
+        '! agent "pstack-read-only" not found. Falling back to default agent\n',
+        "opencode-go/kimi-k3"
+      )
+    ).toThrow("fell back to its default agent");
+    expect(() =>
+      parseProviderOutput(
+        "opencode",
+        JSON.stringify({
+          type: "error",
+          sessionID: "ses_2",
+          error: { name: "UnknownError", data: { message: "Unexpected server error." } },
+        }),
+        "",
+        "opencode-go/kimi-k3"
+      )
+    ).toThrow("Unexpected server error.");
+    expect(() =>
+      parseProviderOutput("opencode", "", "", "opencode-go/kimi-k3")
+    ).toThrow("final text part");
+  });
+
+  it("reads the served model and variant from an opencode export", () => {
+    const exported = parseOpencodeExport(
+      JSON.stringify({
+        info: {
+          id: "ses_1",
+          model: { id: "kimi-k3", providerID: "opencode-go", variant: "max" },
+        },
+        messages: [],
+      })
+    );
+    expect(exported).toEqual({ reportedModel: "opencode-go/kimi-k3", variant: "max" });
+    expect(reportedModelMatches("opencode", "opencode-go/kimi-k3", "opencode-go/kimi-k3")).toBe(true);
+    expect(reportedModelMatches("opencode", "opencode-go/kimi-k3", "opencode-go/kimi-k3-x")).toBe(false);
+    expect(() => parseOpencodeExport(JSON.stringify({ info: {} }))).toThrow(
+      "did not record the served model"
+    );
+  });
+
+  it("checks an opencode listing for the model and its registered variant", () => {
+    expect(opencodeModelListing(OPENCODE_LISTING, "opencode-go/kimi-k3", "max")).toEqual({
+      kind: "listed",
+    });
+    expect(opencodeModelListing(OPENCODE_LISTING, "opencode-go/kimi-k3", "low")).toEqual({
+      kind: "missing-variant",
+      variants: ["max"],
+    });
+    expect(opencodeModelListing(OPENCODE_LISTING, "opencode-go/kimi-k2.6", "max")).toEqual({
+      kind: "missing-variant",
+      variants: [],
+    });
+    expect(opencodeModelListing(OPENCODE_LISTING, "opencode-go/absent", "max")).toEqual({
+      kind: "missing-model",
+    });
   });
 
   it("selects the requested Claude model when usage includes a side model", () => {

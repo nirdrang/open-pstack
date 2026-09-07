@@ -9,9 +9,14 @@ export interface CommandSpec {
   readonly command: string;
   readonly args: readonly string[];
   readonly stdin: "prompt" | "none";
+  readonly env?: Readonly<Record<string, string>>;
 }
 
-export function preflightCommand(provider: Provider): CommandSpec {
+export function opencodeProviderId(model: string): string {
+  return model.slice(0, model.indexOf("/"));
+}
+
+export function preflightCommand(provider: Provider, model: string): CommandSpec {
   switch (provider) {
     case "claude":
       return {
@@ -27,7 +32,22 @@ export function preflightCommand(provider: Provider): CommandSpec {
       };
     case "grok":
       return { command: "grok", args: ["models"], stdin: "none" };
+    case "opencode":
+      return {
+        command: "opencode",
+        args: ["models", opencodeProviderId(model), "--verbose"],
+        stdin: "none",
+      };
   }
+}
+
+export function verificationCommand(
+  provider: Provider,
+  sessionId: string
+): CommandSpec | null {
+  return provider === "opencode"
+    ? { command: "opencode", args: ["export", sessionId], stdin: "none" }
+    : null;
 }
 
 function claudeDeniedTools(mode: AccessMode): string {
@@ -61,6 +81,38 @@ function permissionMode(mode: AccessMode): string {
 
 function effortOverride(effort: Effort): string {
   return `model_reasoning_effort=${JSON.stringify(effort)}`;
+}
+
+export function opencodeAgentName(mode: AccessMode): string {
+  return `pstack-${mode}`;
+}
+
+// opencode has no sandbox flag. Access is bounded by an agent whose
+// permissions are injected through OPENCODE_CONFIG_CONTENT, the highest
+// standard config layer, so a project opencode.json cannot loosen it. Bash
+// cannot be confined to read-only there, so the read-only lane denies it.
+export function opencodeConfig(mode: AccessMode): string {
+  const write = mode === "isolated-write" ? "allow" : "deny";
+  return JSON.stringify({
+    agent: {
+      [opencodeAgentName(mode)]: {
+        mode: "primary",
+        description: `pstack ${mode} lane`,
+        permission: {
+          edit: write,
+          bash: write,
+          task: "deny",
+          webfetch: "deny",
+          websearch: "deny",
+          skill: "deny",
+          todowrite: "deny",
+          external_directory: "deny",
+          question: "deny",
+          doom_loop: "deny",
+        },
+      },
+    },
+  });
 }
 
 export function invocationCommand(options: RunnerOptions): CommandSpec {
@@ -145,6 +197,26 @@ export function invocationCommand(options: RunnerOptions): CommandSpec {
           "--verbatim",
         ],
         stdin: "none",
+      };
+    case "opencode":
+      return {
+        command: "opencode",
+        args: [
+          "run",
+          "--pure",
+          "--format",
+          "json",
+          "--model",
+          options.model,
+          "--variant",
+          options.effort,
+          "--agent",
+          opencodeAgentName(options.mode),
+          "--dir",
+          options.cwd,
+        ],
+        stdin: "prompt",
+        env: { OPENCODE_CONFIG_CONTENT: opencodeConfig(options.mode) },
       };
   }
 }

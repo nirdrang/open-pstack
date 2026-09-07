@@ -27,7 +27,12 @@ const name = process.argv[1].split("/").at(-1);
 const isPreflight =
   (name === "claude" && args[0] === "auth") ||
   (name === "codex" && args[0] === "login") ||
-  (name === "grok" && args[0] === "models");
+  (name === "grok" && args[0] === "models") ||
+  (name === "opencode" && args[0] === "models");
+if (name === "opencode" && args[0] === "export") {
+  console.log(JSON.stringify({info:{id:args[1],model:{id:"kimi-k3",providerID:"opencode-go",variant:"max"}},messages:[]}));
+  process.exit(0);
+}
 const stage = isPreflight ? "preflight" : "model";
 const startedPath = isPreflight
   ? process.env.FAKE_PREFLIGHT_STARTED_PATH
@@ -87,6 +92,10 @@ if (name === "grok" && args[0] === "models") {
   console.log("You are logged in with grok.com.\\nAvailable models:\\n  * grok-4.6 (default)");
   process.exit(0);
 }
+if (name === "opencode" && args[0] === "models") {
+  console.log("opencode-go/kimi-k3\\n{\\n  \\"id\\": \\"kimi-k3\\",\\n  \\"variants\\": {\\n    \\"max\\": {}\\n  }\\n}");
+  process.exit(0);
+}
 const modelIndex = args.findIndex((value) => value === "--model");
 const model = modelIndex >= 0 ? args[modelIndex + 1] : "unknown";
 const reportedModel = model === "fable"
@@ -120,6 +129,10 @@ if (name === "claude") {
   console.log(JSON.stringify({type:"thread.started",thread_id:"o1"}));
   console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:"CODEX_OK"}}));
   console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:20,cached_input_tokens:5,output_tokens:3,reasoning_output_tokens:1}}));
+} else if (name === "opencode") {
+  console.log(JSON.stringify({type:"step_start",sessionID:"s1",part:{type:"step-start"}}));
+  console.log(JSON.stringify({type:"text",sessionID:"s1",part:{type:"text",text:"OPENCODE_OK"}}));
+  console.log(JSON.stringify({type:"step_finish",sessionID:"s1",part:{type:"step-finish",reason:"stop",tokens:{total:40,input:30,output:6,reasoning:4,cache:{read:0,write:0}},cost:0.001}}));
 } else {
   console.log(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:"progress"}]}}));
   console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,result:"GROK_OK",session_id:"g1",usage:{input_tokens:30,output_tokens:4,total_tokens:34},total_cost_usd:0.02,modelUsage:{[model + "-build"]:{}}}));
@@ -142,7 +155,9 @@ function options(provider: Provider, suffix: string = provider): RunnerOptions {
       ? "fable"
       : provider === "codex"
         ? "gpt-5.6-sol"
-        : "grok-4.6";
+        : provider === "grok"
+          ? "grok-4.6"
+          : "opencode-go/kimi-k3";
   return {
     parent,
     provider,
@@ -221,7 +236,7 @@ beforeEach(() => {
   bin = join(scratch, "bin");
   mkdirSync(bin);
   writeFileSync(join(scratch, "prompt.md"), "Return the marker.");
-  for (const name of ["claude", "codex", "grok"]) makeExecutable(name);
+  for (const name of ["claude", "codex", "grok", "opencode"]) makeExecutable(name);
   previousPath = process.env.PATH;
   process.env.PATH = `${bin}:${dirname(process.execPath)}:${previousPath ?? ""}`;
   delete process.env.FAKE_TIMEOUT;
@@ -272,7 +287,7 @@ afterEach(() => {
 });
 
 describe("runLane", () => {
-  for (const provider of ["claude", "codex", "grok"] as const) {
+  for (const provider of ["claude", "codex", "grok", "opencode"] as const) {
     it(`executes and receipts the ${provider} external lane`, async () => {
       const input = options(provider);
       const result = await runLane(input);
@@ -291,8 +306,30 @@ describe("runLane", () => {
       if (provider === "claude") {
         expect(receipt(input.receiptPath).reportedModel).toBe("claude-fable-9-9");
       }
+      if (provider === "opencode") {
+        expect(receipt(input.receiptPath).reportedModel).toBe("opencode-go/kimi-k3");
+        expect(receipt(input.receiptPath).sessionId).toBe("s1");
+      }
     });
   }
+
+  it("refuses an opencode effort that the model does not register as a variant", async () => {
+    const input = { ...options("opencode"), effort: "low" as const };
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(69);
+    expect(existsSync(input.outputPath)).toBe(false);
+    expect(receipt(input.receiptPath)).toMatchObject({
+      status: "unavailable-model",
+      preflight: { status: "failed" },
+    });
+    expect(receipt(input.receiptPath).preflight.evidence).toContain("registered: max");
+  });
+
+  it("rejects an opencode model without its provider prefix", async () => {
+    const input = { ...options("opencode"), model: "kimi-k3" };
+    await expect(runLane(input)).rejects.toThrow("<provider>/<model>");
+    expect(existsSync(input.receiptPath)).toBe(false);
+  });
 
   it("records Codex's exact argv without fabricating a reported model", async () => {
     const input = options("codex");
@@ -929,6 +966,10 @@ describe("childEnvironment", () => {
       KEEP_ME: "yes",
     });
     expect(childEnvironment("grok", source)).toEqual({
+      PATH: "/bin",
+      KEEP_ME: "yes",
+    });
+    expect(childEnvironment("opencode", source)).toEqual({
       PATH: "/bin",
       KEEP_ME: "yes",
     });
