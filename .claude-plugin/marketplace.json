@@ -1,9 +1,9 @@
 {
-  "name": "open-pstack",
+  "name": "open-pstack-nirdrang",
   "owner": {
-    "name": "Eric Litman"
+    "name": "Nir Drang"
   },
-  "description": "Pstack for Claude Code and Codex, tracking Cursor's upstream pstack.",
+  "description": "A fork of ericlitman/open-pstack. It tracks upstream and carries local changes, starting with an opencode provider for the external-lane runner.",
   "plugins": [
     {
       "name": "pstack",
@@ -13,7 +13,7 @@
       "author": {
         "name": "Lauren Tan (original)"
       },
-      "homepage": "https://github.com/ericlitman/open-pstack",
+      "homepage": "https://github.com/nirdrang/open-pstack",
       "license": "MIT",
       "keywords": [
         "pstack",
