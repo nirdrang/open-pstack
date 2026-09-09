@@ -61,6 +61,15 @@ function modelFromUsage(
     ?? null;
 }
 
+// A terminal event the parser refuses but that still carries the model's
+// final text. The runner writes that text out, so a classification failure
+// never destroys the lane's work.
+export class MalformedOutputError extends Error {
+  constructor(message: string, readonly text: string | null) {
+    super(message);
+  }
+}
+
 function parseClaude(stdout: string, requestedModel: string): ParsedOutput {
   let raw: unknown;
   try {
@@ -73,7 +82,9 @@ function parseClaude(stdout: string, requestedModel: string): ParsedOutput {
 
   const text = nullableString(value.result);
   if (text === null) throw new Error("claude result did not contain final text");
-  if (value.is_error === true) throw new Error("claude reported an error result");
+  if (value.is_error === true) {
+    throw new MalformedOutputError("claude reported an error result", text);
+  }
 
   return {
     text,
@@ -100,7 +111,10 @@ function parseGrok(stdout: string, requestedModel: string): ParsedOutput {
 
   if (result === null) throw new Error("grok result did not contain a terminal event");
   if (result.is_error === true || result.subtype !== "success") {
-    throw new Error("grok reported an error result");
+    throw new MalformedOutputError(
+      `grok reported an error result (subtype ${JSON.stringify(result.subtype ?? null)}, is_error ${JSON.stringify(result.is_error ?? null)})`,
+      nullableString(result.result)
+    );
   }
   const text = nullableString(result.result);
   if (text === null) throw new Error("grok result did not contain final text");

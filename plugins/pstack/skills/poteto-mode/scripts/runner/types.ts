@@ -80,6 +80,10 @@ export interface RunnerReceipt {
   readonly error: {
     readonly message: string;
     readonly evidence: string;
+    // Set only by a malformed-result receipt: the raw child streams, kept
+    // whole beside the receipt because `evidence` is a bounded tail.
+    readonly stdoutPath?: string;
+    readonly stderrPath?: string;
   } | null;
 }
 
