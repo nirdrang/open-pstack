@@ -12,6 +12,30 @@ Rolling back is one edit to the consuming project's `extraKnownMarketplaces` and
 
 Nothing else is changed. Every other file is upstream's.
 
+### A rejected result keeps its text and its stream
+
+Six files under `plugins/pstack/skills/poteto-mode/`:
+
+    references/provider-dispatch.md
+    scripts/runner/types.ts
+    scripts/runner/parse-output.ts
+    scripts/runner/run.ts
+    scripts/runner/run.test.ts
+    scripts/runner/parse-output.test.ts
+
+Measured on 2026-09-09: a grok lane ran sixteen minutes, committed real work, and emitted a
+terminal event whose subtype was not the word `success`. The runner classified the run as
+malformed, never wrote the output file, and kept the first four thousand characters of the stream
+as evidence, which is the prompt. The subtype that caused the rejection was unrecoverable.
+
+Now a parse failure that still holds the terminal text throws `MalformedOutputError` carrying
+it, and the runner writes that text into the output path it reserved. The receipt stays
+`malformed-output`, so the parent does not count the lane. The raw streams are kept whole beside
+the receipt as `<receipt>.stdout` and `<receipt>.stderr`, named in `error.stdoutPath` and
+`error.stderrPath`, and the inline evidence is the tail. The grok message names the subtype and
+`is_error` value it refused. Which subtypes should count as success is a separate decision,
+taken only once a real one has been captured.
+
 ### An opencode provider for the external-lane runner
 
 Nine files under `plugins/pstack/skills/poteto-mode/`:

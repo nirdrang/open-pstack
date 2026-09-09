@@ -135,7 +135,7 @@ if (name === "claude") {
   console.log(JSON.stringify({type:"step_finish",sessionID:"s1",part:{type:"step-finish",reason:"stop",tokens:{total:40,input:30,output:6,reasoning:4,cache:{read:0,write:0}},cost:0.001}}));
 } else {
   console.log(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:"progress"}]}}));
-  console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,result:"GROK_OK",session_id:"g1",usage:{input_tokens:30,output_tokens:4,total_tokens:34},total_cost_usd:0.02,modelUsage:{[model + "-build"]:{}}}));
+  console.log(JSON.stringify({type:"result",subtype:process.env.FAKE_GROK_RESULT_SUBTYPE ?? "success",is_error:false,result:"GROK_OK",session_id:"g1",usage:{input_tokens:30,output_tokens:4,total_tokens:34},total_cost_usd:0.02,modelUsage:{[model + "-build"]:{}}}));
 }
 if (process.env.FAKE_MODEL_EXITING_PATH) {
   writeFileSync(process.env.FAKE_MODEL_EXITING_PATH, String(process.pid));
@@ -256,6 +256,7 @@ beforeEach(() => {
   delete process.env.FAKE_GROK_TRANSIENT_UNAUTH_PATH;
   delete process.env.FAKE_GROK_PREFLIGHT_LOG_PATH;
   delete process.env.FAKE_GROK_MISSING_MODEL;
+  delete process.env.FAKE_GROK_RESULT_SUBTYPE;
   delete process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS;
   delete process.env.FAKE_DESCENDANT_PID_PATH;
   delete process.env.FAKE_SELF_SIGNAL;
@@ -280,6 +281,7 @@ afterEach(() => {
   delete process.env.FAKE_GROK_TRANSIENT_UNAUTH_PATH;
   delete process.env.FAKE_GROK_PREFLIGHT_LOG_PATH;
   delete process.env.FAKE_GROK_MISSING_MODEL;
+  delete process.env.FAKE_GROK_RESULT_SUBTYPE;
   delete process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS;
   delete process.env.FAKE_DESCENDANT_PID_PATH;
   delete process.env.FAKE_SELF_SIGNAL;
@@ -357,6 +359,29 @@ describe("runLane", () => {
       modelVerified: false,
       modelEvidence: null,
     });
+  });
+
+  it("keeps a rejected Grok result's text and raw stream instead of discarding them", async () => {
+    process.env.FAKE_GROK_RESULT_SUBTYPE = "error_max_turns";
+    const input = options("grok", "grok-rejected-result");
+    const result = await runLane(input);
+
+    expect(result.exitCode).toBe(65);
+    expect(readFileSync(input.outputPath, "utf8")).toBe("GROK_OK");
+    const written = receipt(input.receiptPath);
+    expect(written).toMatchObject({
+      status: "malformed-output",
+      reportedModel: null,
+      modelVerified: false,
+      modelEvidence: null,
+    });
+    expect(written.error?.message).toContain('subtype "error_max_turns"');
+    expect(written.error?.evidence).toContain('"subtype":"error_max_turns"');
+    expect(written.error?.stdoutPath).toBe(`${input.receiptPath}.stdout`);
+    expect(readFileSync(`${input.receiptPath}.stdout`, "utf8")).toContain(
+      '"subtype":"error_max_turns"'
+    );
+    expect(written.error?.stderrPath).toBeUndefined();
   });
 
   it("retries a contradictory Grok authentication preflight before running the model", async () => {

@@ -17,6 +17,7 @@ import {
 } from "./commands.ts";
 import { versionedClaudeAlias } from "./model-aliases.ts";
 import {
+  MalformedOutputError,
   opencodeModelListing,
   parseOpencodeExport,
   parseProviderOutput,
@@ -61,6 +62,19 @@ export interface RunResult {
 
 function evidence(value: string): string {
   return value.trim().slice(0, ERROR_EVIDENCE_LIMIT);
+}
+
+// A provider's terminal event sits at the end of its stream, so a rejected
+// result is explained by the tail, never the head.
+function tailEvidence(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.slice(Math.max(0, trimmed.length - ERROR_EVIDENCE_LIMIT));
+}
+
+function keepStream(path: string, content: string): string | undefined {
+  if (content.length === 0) return undefined;
+  writeFileSync(path, content, { encoding: "utf8", mode: 0o600 });
+  return path;
 }
 
 function removeIfExists(path: string): void {
@@ -880,7 +894,12 @@ async function executeLane(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    removeIfExists(options.outputPath);
+    const text = error instanceof MalformedOutputError ? error.text : null;
+    if (text === null) {
+      removeIfExists(options.outputPath);
+    } else {
+      writeFileSync(options.outputPath, text, { encoding: "utf8", mode: 0o600 });
+    }
     receipt = completeReceipt(options, {
       ...base,
       status: error instanceof VerificationInterrupted ? error.status : "malformed-output",
@@ -892,7 +911,9 @@ async function executeLane(
       costUsd: null,
       error: {
         message,
-        evidence: evidence(`${result.stderr}\n${result.stdout}`),
+        evidence: tailEvidence(`${result.stderr}\n${result.stdout}`),
+        stdoutPath: keepStream(`${options.receiptPath}.stdout`, result.stdout),
+        stderrPath: keepStream(`${options.receiptPath}.stderr`, result.stderr),
       },
     });
   }

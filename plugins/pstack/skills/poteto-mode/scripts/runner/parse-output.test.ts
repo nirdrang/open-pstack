@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  MalformedOutputError,
   opencodeModelListing,
   parseOpencodeExport,
   parseProviderOutput,
@@ -141,6 +142,31 @@ describe("parseProviderOutput", () => {
     expect(parsed.reportedModel).toBe("grok-4.6-build");
     expect(reportedModelMatches("grok", "grok-4.6", parsed.reportedModel)).toBe(
       true
+    );
+  });
+
+  it("carries Grok's final text and subtype out of a rejected terminal event", () => {
+    const stdout = [
+      JSON.stringify({ type: "assistant", message: { content: [] } }),
+      JSON.stringify({
+        type: "result",
+        subtype: "error_max_turns",
+        is_error: false,
+        result: "GROK_PARTIAL",
+        modelUsage: { "grok-4.6-build": {} },
+      }),
+    ].join("\n");
+    let caught: unknown = null;
+    try {
+      parseProviderOutput("grok", stdout, "", "grok-4.6");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(MalformedOutputError);
+    const failure = caught as MalformedOutputError;
+    expect(failure.text).toBe("GROK_PARTIAL");
+    expect(failure.message).toBe(
+      'grok reported an error result (subtype "error_max_turns", is_error false)'
     );
   });
 
