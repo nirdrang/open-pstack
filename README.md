@@ -32,7 +32,7 @@ pstack does not ask you to trust an agent on day one. It helps the agent leave e
 
 ## Install
 
-You need a current Claude Code or Codex installation. For the full four-model review, install and sign in to the Claude Code, Codex, and Grok command-line tools. [Bun](https://bun.sh) runs the small local tool that starts models outside the app you are using. You can still use the core workflows with fewer models.
+You need a current Claude Code or Codex installation. For the full three-model review, install and sign in to the Claude Code, Codex, and Grok command-line tools. [Bun](https://bun.sh) runs the small local tool that starts models outside the app you are using. You can still use the core workflows with fewer models.
 
 ### Claude Code
 
@@ -80,9 +80,11 @@ In Codex, ask:
 Use pstack:setup-pstack to configure pstack.
 ```
 
-Setup checks the models you can actually run, shows how each one will start, and asks before saving the choices. The current default group uses Fable, GPT-5.6 Sol, Grok 4.6, and Opus.
+Setup checks the models you can actually run, shows how each one will start, and asks before saving the choices. The default review panel uses Opus, GPT-5.6 Sol, and Grok 4.7, and setup probes only the models your roles use. Fable remains available.
 
 An older model sheet starts using the rolling aliases in memory as soon as this release is installed. Run setup once after updating to persist that migration. It replaces versioned Fable and Opus entries while preserving every role assignment and effort selection.
+
+A model sheet from an earlier release keeps its panel. To take the new defaults, delete those role lines and run setup again; setup fills missing roles from the defaults. A `grok:grok-4.6` entry keeps running until the next setup run asks you to replace it.
 
 ### 2. Use poteto-mode
 
@@ -124,7 +126,7 @@ Plugin skills include `pstack:` in their name. In Claude Code, invoke a native s
 
 Some pstack workflows use one model. Skills such as `architect`, `arena`, and `interrogate` can run several models in parallel. Each model run uses the subscription and token allowance of its own command-line tool.
 
-`setup-pstack` lets you choose the models, one requested effort per model family, and how many run in parallel. A model from the app you are using runs inside that app. Other models run through their own command-line tools. Open Pstack does not quietly replace a failed model with a weaker one.
+`setup-pstack` lets you choose the models, one requested effort per model family you assign, and how many run in parallel. A model from the app you are using runs inside that app. Other models run through their own command-line tools. Open Pstack does not quietly replace a failed model with a weaker one.
 
 ## Claude Code and Codex
 
@@ -153,7 +155,7 @@ This repository also keeps:
 
 ## Staying close to Lauren's pstack
 
-Open Pstack 1.4.1 tracks pstack 0.15.1 at Cursor commit [`f8abeddd1862dc73704e3d719dd73df0d51b8c71`](https://github.com/cursor/plugins/commit/f8abeddd1862dc73704e3d719dd73df0d51b8c71).
+Open Pstack 1.5.0 tracks pstack 0.15.5 at Cursor commit [`12d587dfb20741cafc376c42c696c5f6e2a64487`](https://github.com/cursor/plugins/commit/12d587dfb20741cafc376c42c696c5f6e2a64487).
 
 The two projects have separate version numbers. The pstack version identifies Lauren's upstream content. The Open Pstack version identifies the Claude Code and Codex package built from it.
 

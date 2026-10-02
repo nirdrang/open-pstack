@@ -42,7 +42,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
   - [ ] `skills/poteto-mode/playbooks/opening-a-pr.md`
   - [ ] `skills/<each other leaf skill the program uses>/SKILL.md`
 - [ ] Arm the 30-minute audit tick as a real cadence. Never leave the cadence to memory.
-- [ ] Use this tick prompt, verbatim. "Re-read the execution playbook from the installed plugin and the standing orders. Audit the operation against both and fix drift in this tick. Probe every active lane and judge progress by side effects only. Stand down a lane only on affirmative failure evidence, and dispatch its replacement in the same tick. Then send the operator a status message, whether or not anything changed, with the queue table of PR, owner, state, and head SHA, the verdicts since the last tick, what merged, open operator gates, and blockers."
+- [ ] Use this tick prompt, verbatim. "Re-read the execution playbook from the installed plugin and the standing orders. Audit the operation against both and fix drift in this tick. Probe every active lane and judge progress by side effects only. Stand down a lane only on affirmative failure evidence, and dispatch its replacement in the same tick. Then post a short status message to the operator in chat only when the audit found a tracked change that no earlier status message reported, such as a PR opened, a code-ready head, a round launched or closed, a verdict, a merge, a stuck agent and the action taken, a blocker added or cleared, or a decision only the operator can make. Name every such change and nothing else. Do not repeat a table, the merged list, or an unchanged blocker. If the audit found none, end the turn with no reply text. Either way, log this tick's row in your decision trail. The row names the items reported, or none."
 - [ ] On the operator's hold or stand-down, send every owner a zero-writes order at once.
 
 ### Spawn owners
@@ -61,12 +61,12 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 - [ ] Run the repo's lint and typecheck once before the PR-facing push. Push with hooks on.
 - [ ] Run `/deslop` before each commit and `/no-comments` before review.
 - [ ] Triage every Bugbot and security-reviewer comment per `skills/poteto-mode/references/bugbot-triage.md` under the installed plugin.
-- [ ] Before babysit, rebase each independent PR and stack root onto current trunk. Rebase each unmerged stack child onto its parent's exact tip. After its parent merges, use Shipping's explicit old-base-to-trunk rebase before the child's merge-ready report.
+- [ ] Rebase each independent PR and stack root onto current trunk before the code-ready report and babysit. Rebase each unmerged stack child onto its parent's exact tip. Keep that merge base in fix rounds. Rebase again only at merge prep, on a `git merge-tree` conflict with trunk, or on a CI failure that comes from a change on trunk. After its parent merges, use Shipping's explicit old-base-to-trunk rebase before the child's merge-ready report.
 
 ### Verdict and merge, for every PR
 
-- [ ] At the merge-ready head SHA, run the swarm per `skills/swarm/SKILL.md`. One gates lane. The ten live lanes from the PR's **Verify, live** block. The perf lane from its **Verify, perf** block. One audit lane that reads the diff and the receipts and distrusts the PR body.
-- [ ] Clean only when every lane is `PASS`. Findings go back to the owner. A new head gets a fresh swarm and a fresh verdict.
+- [ ] At the code-ready head SHA and at each later push that changes the patch, run the swarm per `skills/swarm/SKILL.md`. One gates lane. The ten live lanes from the PR's **Verify, live** block. The perf lane from its **Verify, perf** block. Two or more audit lanes, each with its own focus, that read the diff and the receipts and distrust the PR body. The root audits the receipts in the merge-ready report before the verdict.
+- [ ] Clean only when every lane is `PASS`. Findings go back to the owner, including a defect that a lane filed as a note. A new head gets a fresh swarm and a fresh verdict, except for results that stay valid under the patch ID rule in `skills/poteto-mode/playbooks/shipping.md`.
 - [ ] <The merge or append rule from the execution playbook, with the verdict SHA, current landing SHA, recorded patch base, and patch ID rule from `skills/poteto-mode/playbooks/shipping.md`.>
 
 ### Boot recipe, for every live lane

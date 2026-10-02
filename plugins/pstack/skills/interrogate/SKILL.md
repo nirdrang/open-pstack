@@ -34,14 +34,13 @@ Write one clear paragraph. If you're unsure about the intent, ask the user befor
 
 ## Step 3, Spawn Reviewers
 
-Start all reviewers in one fan-out phase. Use `interrogate reviewers` from the current harness's pstack model sheet when present, one reviewer per entry, extending or shrinking the Reviewer A/B/C/D labels below to the configured entry count. Otherwise use the table defaults. Native reviewers use the parent subagent primitive. External reviewers use the launcher directly and must return a complete, model-verified receipt.
+Start all reviewers in one fan-out phase. Use `interrogate reviewers` from the current harness's pstack model sheet when present, one reviewer per entry, extending or shrinking the Reviewer A/B/C labels below to the configured entry count. Otherwise use the table defaults. Native reviewers use the parent subagent primitive. External reviewers use the launcher directly and must return a complete, model-verified receipt.
 
 | Subagent | Default model |
 |----------|---------------|
-| Reviewer A | `claude:fable@max` |
+| Reviewer A | `claude:opus@max` |
 | Reviewer B | `codex:gpt-5.6-sol@max` |
-| Reviewer C | `grok:grok-4.6@xhigh` |
-| Reviewer D | `claude:opus@xhigh` |
+| Reviewer C | `grok:grok-4.7@xhigh` |
 
 For each reviewer, route the configured descriptor with `read-only` access and a unique output/receipt path. If the descriptor is `inherit-parent` or `auto`, use the parent subagent primitive without a model override. If a provider, login, or model is unavailable, record a dropout and continue with the completed reviewers. Never pick the closest model or silently fall back; that destroys the meaning of cross-provider agreement.
 

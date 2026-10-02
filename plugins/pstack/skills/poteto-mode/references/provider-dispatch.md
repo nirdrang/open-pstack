@@ -10,12 +10,12 @@ pstack model choices are provider-qualified descriptors:
 
 | Family | Upstream pstack choice | Provider | Model | Default effort | Selectable efforts | Claude-native agent stem |
 |---|---|---|---|---|---|---|
-| fable | fable | claude | fable | max | low medium high xhigh max | fable |
+| fable | - | claude | fable | max | low medium high xhigh max | fable |
 | sol | gpt-5.6-sol-max | codex | gpt-5.6-sol | max | low medium high xhigh max | - |
-| grok | grok-4.6-fast-xhigh | grok | grok-4.7 | xhigh | low medium high xhigh max | - |
-| opus | opus | claude | opus | xhigh | low medium high xhigh max | opus |
+| grok | grok-4.7-xhigh-fast | grok | grok-4.7 | xhigh | low medium high xhigh max | - |
+| opus | opus | claude | opus | max | low medium high xhigh max | opus |
 
-The allowed effort universe is exactly `low`, `medium`, `high`, `xhigh`, `max`. First-run requested efforts are the Default effort cell of each row. A Claude-native agent stem of `-` means the family has no Claude-native agent. Otherwise the shipped agent name is `pstack-<stem>-<effort>`.
+The allowed effort universe is exactly `low`, `medium`, `high`, `xhigh`, `max`. First-run requested efforts are the Default effort cell of each row. The first-run panel is Opus, Sol, and Grok, in that order. Fable stays selectable, but no first-run role uses it. A Claude-native agent stem of `-` means the family has no Claude-native agent. Otherwise the shipped agent name is `pstack-<stem>-<effort>`.
 
 `fable` and `opus` are Claude Code's rolling aliases. Claude resolves each alias to the latest available family revision. A runner receipt keeps the requested alias in `model` and the concrete provider-reported revision in `reportedModel`; verification accepts only a numeric `claude-fable-*` or `claude-opus-*` revision from the matching family.
 
