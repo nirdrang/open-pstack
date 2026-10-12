@@ -132,9 +132,8 @@ export const CONTRACT = Object.freeze({
     "Boot recipe, for every live lane",
   ]),
   programMarkers: Object.freeze([
-    "standing orders",
     "the installed plugin",
-    "30-minute",
+    "hourly",
     "status message",
   ]),
   howToReadMarkers: Object.freeze([

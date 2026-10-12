@@ -77,7 +77,61 @@ fi
 # interrogate defaults copy it verbatim.
 setup="$repo/plugins/pstack/skills/setup-pstack/SKILL.md"
 dispatch="$repo/plugins/pstack/skills/poteto-mode/references/provider-dispatch.md"
-quad_of() { { grep -oE '(claude|codex|grok):[a-z0-9.-]+@(low|medium|high|xhigh|max)' || true; } | tr '\n' ' ' | sed 's/ $//'; }
+
+# Config-home port invariant (#120): guard upstream merges against daily-home writes.
+config_mapping="$repo/plugins/pstack/skills/poteto-mode/references/codex-tools.md"
+config_home_bad=""
+# The legacy import is rendered text, not a hard-coded write destination.
+if sed 's|@~/.claude/pstack-models.md||g' "$setup" | grep -nE '~/(\.claude|\.codex)|\$HOME/(\.claude|\.codex)'; then
+  config_home_bad="setup still names a literal default config path outside the legacy import"$'\n'
+fi
+for source in "$setup" "$config_mapping"; do
+  grep -Fxq '@~/.claude/pstack-models.md' "$source" || config_home_bad="${config_home_bad}$source lacks the literal legacy default-home import"$'\n'
+  for rule in \
+    'When `<config-home>` is the default home, render exactly' \
+    'Only when `CLAUDE_CONFIG_DIR` redirects the home' \
+    'render exactly `@./pstack-models.md`' \
+    'basename is `pstack-models.md`' \
+    'On a rerun, replace that one line in place, preserving all unrelated bytes.' \
+    'If zero matching import lines exist, append one.' \
+    'If more than one exists, stop and report inconsistent state before either write'; do
+    grep -Fq "$rule" "$source" || config_home_bad="${config_home_bad}$source lacks Claude import rule: $rule"$'\n'
+  done
+  if grep -nE 'backslash|space-escaped|absolute resolved' "$source"; then
+    config_home_bad="${config_home_bad}$source still specifies absolute or escaped Claude imports"$'\n'
+  fi
+done
+grep -Fq 'require an explicit source choice before normalization or probing' "$setup" || config_home_bad="${config_home_bad}setup does not require explicit source selection before normalization or probing"$'\n'
+grep -Fq '[harness config-home rule](../poteto-mode/references/codex-tools.md#harness-config-homes)' "$setup" || config_home_bad="${config_home_bad}setup does not reference the canonical config-home rule"$'\n'
+for expression in '"${CLAUDE_CONFIG_DIR:-$HOME/.claude}"' '"${CODEX_HOME:-$HOME/.codex}"'; do
+  grep -Fxq "$expression" "$config_mapping" || config_home_bad="${config_home_bad}mapping lacks quoted nonempty/default resolution: $expression"$'\n'
+done
+for target in pstack-models.md CLAUDE.md AGENTS.md; do
+  grep -Fq "<config-home>/$target" "$setup" || config_home_bad="${config_home_bad}setup does not resolve $target through config-home"$'\n'
+done
+# Resolution only: keep real HOME/USER and never write default or daily targets.
+if ! (
+  unset CLAUDE_CONFIG_DIR CODEX_HOME
+  [ "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" = "$HOME/.claude" ] &&
+  [ "${CODEX_HOME:-$HOME/.codex}" = "$HOME/.codex" ] || exit 1
+  CLAUDE_CONFIG_DIR="" CODEX_HOME=""
+  [ "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" = "$HOME/.claude" ] &&
+  [ "${CODEX_HOME:-$HOME/.codex}" = "$HOME/.codex" ] || exit 1
+  CLAUDE_CONFIG_DIR="/tmp/pstack claude # config" CODEX_HOME="/tmp/pstack codex # config"
+  [ "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" = "/tmp/pstack claude # config" ] &&
+  [ "${CODEX_HOME:-$HOME/.codex}" = "/tmp/pstack codex # config" ]
+); then
+  config_home_bad="${config_home_bad}unset, empty, or space-containing resolution changed"$'\n'
+fi
+if [ -n "$config_home_bad" ]; then
+  note "FAIL: setup config-home port invariant regressed:"
+  note "$config_home_bad"
+  fail=1
+else
+  note "ok: setup config-home port invariant; unset/empty defaults and spaced overrides resolve without writes"
+fi
+
+quad_of() { { grep -oE '(claude|codex|grok):[a-z0-9.-]+@(low|medium|high|xhigh|max|ultra)' || true; } | tr '\n' ' ' | sed 's/ $//'; }
 canon_panel="$( { grep -m1 '^arena runners:' "$setup" || true; } | quad_of)"
 panel_bad=""
 [ -n "$canon_panel" ] || panel_bad="could not read the canonical panel from $setup"$'\n'
@@ -112,6 +166,24 @@ else
 fi
 
 plugin="$repo/plugins/pstack"
+
+poteto_agent="$plugin/agents/poteto-agent.md"
+poteto_agent_front="$(sed -n '2,/^---$/p' "$poteto_agent")"
+poteto_preload_bad=""
+if [ "$(printf '%s\n' "$poteto_agent_front" | grep -cx 'skills:' || true)" != "1" ]; then
+  poteto_preload_bad="${poteto_agent} must declare one skills list"$'\n'
+fi
+if [ "$(printf '%s\n' "$poteto_agent_front" | grep -cx '  - pstack:poteto-mode' || true)" != "1" ]; then
+  poteto_preload_bad="${poteto_preload_bad}${poteto_agent} must preload pstack:poteto-mode"$'\n'
+fi
+if [ -n "$poteto_preload_bad" ]; then
+  note "FAIL: Claude poteto-agent does not preload poteto-mode:"
+  note "$poteto_preload_bad"
+  fail=1
+else
+  note "ok: Claude poteto-agent preloads poteto-mode"
+fi
+
 canon="$plugin/skills/poteto-mode/references/bugbot-triage.md"
 skill="$plugin/skills/babysit/SKILL.md"
 playbook="$plugin/skills/poteto-mode/playbooks/babysit.md"
@@ -380,6 +452,45 @@ else
   note "ok: codex logo path resolves"
 fi
 
+verification="$repo/.claude/skills/verify-open-pstack"
+verification_bad=""
+if [ ! -L "$repo/.agents/skills/verify-open-pstack" ] ||
+   [ "$(readlink "$repo/.agents/skills/verify-open-pstack" 2>/dev/null || true)" != "../../.claude/skills/verify-open-pstack" ]; then
+  verification_bad="Codex must link to the canonical Claude project skill"
+fi
+for section in Launch Doctor Drive Evidence Cleanup Helpers; do
+  grep -q "^## $section$" "$verification/SKILL.md" || verification_bad="$verification_bad missing $section;"
+done
+for file in features/registry.json features/README.md package.json bun.lock tsconfig.json; do
+  [ -f "$verification/$file" ] || verification_bad="$verification_bad missing $file;"
+done
+[ -x "$verification/scripts/verify.sh" ] || verification_bad="$verification_bad helper is not executable;"
+if [ -e "$plugin/skills/verify-open-pstack" ] || [ -e "$plugin/commands/verify-open-pstack.md" ]; then
+  verification_bad="$verification_bad project verifier must not ship in the plugin;"
+fi
+if [ -n "$verification_bad" ]; then
+  note "FAIL: repository-local verification skill: $verification_bad"
+  fail=1
+else
+  note "ok: shared project verification skill has executable helper and maintained feature map"
+fi
+
+if release_out="$(python3 "$repo/scripts/release_test.py" 2>&1 && python3 "$repo/scripts/release.py" notes 2>&1 >/dev/null)"; then
+  note "ok: release notes build from the CHANGES.md section for the manifest version ($vc)"
+else
+  note "FAIL: release notes do not build"
+  note "$release_out"
+  fail=1
+fi
+
+note "Checking non-shipped verification helper"
+(
+  cd "$verification"
+  bun install --frozen-lockfile
+  bun run test
+  bun run typecheck
+)
+
 if [ "${PSTACK_STATIC_ONLY:-0}" = "1" ]; then
   exit "$fail"
 fi
@@ -416,5 +527,17 @@ invoke='Call the Skill tool with skill "testplug:foo" exactly once and follow wh
 
 check "model-initiated Skill-tool invocation" "SKILL-RAN" "$(run "$invoke")"
 check "user /testplug:foo invocation" "SKILL-RAN" "$(run '/testplug:foo')"
+
+preloaded_agent_output="$(
+  claude -p \
+    'Use the Agent tool once with subagent_type pstack:poteto-agent. Give it this task verbatim: "Without invoking Skill or reading files, reply with the first Core principle named in the preloaded poteto-mode skill." Return only the child response.' \
+    --plugin-dir "$plugin" \
+    --model fable \
+    --effort max \
+    --max-turns 5 \
+    --tools Agent \
+    < /dev/null 2>&1 || true
+)"
+check "poteto-agent preloaded skill" "Laziness Protocol" "$preloaded_agent_output"
 
 exit "$fail"

@@ -1,0 +1,4 @@
+#!/bin/sh
+unset BUN_OPTIONS NODE_OPTIONS
+case $0 in */*) dir=${0%/*} ;; *) dir=. ;; esac
+exec bun --no-env-file --config=/dev/null "$dir/resolve-codex-transcript.ts" "$@"

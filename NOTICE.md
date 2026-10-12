@@ -21,6 +21,7 @@ This plugin is a port of upstream MIT-licensed work. All upstream copyright noti
 | `plugins/pstack/skills/` (0.15.0 prose changes and the new `principle-attack-the-premise` and `principle-test-behavior-not-implementation` leaves), `plugins/pstack/assets/logo.png`, `README-UPSTREAM.md` | [cursor/plugins/pstack @ 71ed0d1](https://github.com/cursor/plugins/tree/71ed0d1076fec562c1b74ee353121a8d00f75382/pstack) | (c) 2026 Lauren Tan | MIT | [LICENSE](LICENSE) |
 | `plugins/pstack/skills/poteto-mode/SKILL.md` (0.15.1 reply-writing evidence rule) | [cursor/plugins/pstack @ f8abedd](https://github.com/cursor/plugins/tree/f8abeddd1862dc73704e3d719dd73df0d51b8c71/pstack) | (c) 2026 Lauren Tan | MIT | [LICENSE](LICENSE) |
 | `plugins/pstack/skills/` (0.15.2 to 0.15.5 changes: three-model defaults, code-ready rounds, owner authority, prompt cuts, decision-trail runs, `show-me-your-work/scripts/log.sh`), `README-UPSTREAM.md` | [cursor/plugins/pstack @ 12d587d](https://github.com/cursor/plugins/tree/12d587dfb20741cafc376c42c696c5f6e2a64487/pstack) | (c) 2026 Lauren Tan | MIT | [LICENSE](LICENSE) |
+| `plugins/pstack/skills/` (0.15.6 to 0.15.17 changes: `benchmark-checklist`, `correct`, `ketchup`, `poteto-help`, `principle-explain-the-number`, architect red flags, fresh subagents, hourly audit tick, PR headings, performance mantras, prompt distillation), `plugins/pstack/agents/poteto-agent.md`, `README-UPSTREAM.md` | [cursor/plugins/pstack @ 978ca6e](https://github.com/cursor/plugins/tree/978ca6e9c0e012047cd5058b8e829240336e704e/pstack) | (c) 2026 Lauren Tan | MIT | [LICENSE](LICENSE) |
 
 ## What changed in the port
 
@@ -35,6 +36,7 @@ Summary of structural changes:
 - `plugins/pstack/skills/babysit/` is independently authored as the Claude Code analog of Cursor's `/babysit` built-in. It has no upstream pstack equivalent; its workflow is informed by Cursor's public `/babysit` behavior. No code or prose was copied from any source.
 - `plugins/pstack/skills/poteto-mode/scripts/` is vendored from upstream (`watch-pr`, `orch`, `bootstrap.ts`, `worktree-audit.sh`, `package.json`, `bun.lock`) with these port edits: `worktree-audit.sh` reads `~/.claude/projects/` instead of Cursor's transcript directory and warns when `jq` or `rg` is missing (their absence silently blanks the columns the prune decision reads), the private workspace package is named `@open-pstack/poteto-mode-tools`, `bootstrap.ts` rejects Node before it reads Bun-only APIs, and `package.json` includes the port-authored tests in `bun run test`. `check-plan.mjs` is the Cursor 0.14.3 checker adapted for the shared Claude Code and Codex skeleton. `bootstrap.test.ts` and `check-plan.test.ts` are authored for this port.
 - `plugins/pstack/agents/comment-sicko.md` is upstream's `Comment Sicko` agent, renamed to `comment-sicko` so the name works as a Claude Code `subagent_type`. The body is verbatim.
+- `plugins/pstack/agents/poteto-agent.md` keeps the upstream prompt and adds Claude Code `skills` frontmatter so the isolated subagent preloads `pstack:poteto-mode`.
 - Claude-native Fable and Opus lanes are port-authored agent definitions. They select the rolling family alias plus requested effort for every selectable Claude-native pair in the provider-dispatch model matrix.
 - A Codex build shares the same `skills/` tree. It adds `plugins/pstack/.codex-plugin/plugin.json`, a root `.agents/plugins/marketplace.json`, and `plugins/pstack/skills/poteto-mode/references/codex-tools.md` (the Claude-to-Codex tool, model, and built-in map), plus a one-line Platform note in the skills that name a Claude primitive. The skill content itself is unchanged. See [CHANGES.md](CHANGES.md#codex-port).
 
@@ -51,10 +53,13 @@ Files authored for this port (not derived from upstream):
 - `plugins/pstack/skills/poteto-mode/references/codex-tools.md`
 - `plugins/pstack/skills/poteto-mode/scripts/bootstrap.test.ts`
 - `plugins/pstack/skills/poteto-mode/scripts/check-plan.test.ts`
+- `plugins/pstack/skills/poteto-mode/scripts/resolve-codex-transcript`, `resolve-codex-transcript.ts`, and `resolve-codex-transcript.test.ts` (Reflect's known-chat Codex transcript lookup, #140; behavior and test cases from Donncha O'Toole's contribution)
+- `.claude/skills/verify-open-pstack/scripts/reflect.test.ts` (#140)
 - `plugins/pstack/skills/babysit/SKILL.md` (independently authored; workflow informed by Cursor's public `/babysit` behavior)
 - `plugins/pstack/agents/pstack-fable-*.md` and `plugins/pstack/agents/pstack-opus-*.md` (Claude-native frontier lanes at each selectable effort)
 - `plugins/pstack/hooks/hooks.json`, `plugins/pstack/hooks/session-start`, and `plugins/pstack/hooks/session-start-context.md` (the auto-fire hook and its mandate)
 - `NOTICE.md` (this file)
 - `README.md`
+- `REVIEW.md` (the review panel's usage and waiver-scope mandate, #153; adapted from mastra-pilot's `REVIEW.md`, not from upstream)
 - `CHANGES.md`
 - `LICENSE-cursor-team-kit` (copied verbatim from upstream cursor-team-kit MIT)

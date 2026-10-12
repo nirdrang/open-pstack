@@ -14,7 +14,7 @@
 
 **Driver skill.** Pick it by surface. Browser, Electron, and web UIs use Claude Code's **verify** skill. CLIs and TUIs use Claude Code's **run** skill. Native mobile uses whatever simulator-driving skill the repo has. On Codex, substitute per [`../references/codex-tools.md`](../references/codex-tools.md). A PR that touches two surfaces gets lanes on both. A surface with no driver skill is a risk in Appendix C, and its live block still names how each lane drives it.
 
-On Claude Code, arm the 30-minute audit tick as a real `/loop` in dynamic mode. On Codex, arm the cadence per [`../references/codex-tools.md`](../references/codex-tools.md). Never leave the cadence to memory. Keep skill-relative links in this playbook body. Do not copy them into the plan file.
+On Claude Code, arm the hourly audit tick as `/loop 1h` with the tick prompt. On Codex, arm the cadence per [`../references/codex-tools.md`](../references/codex-tools.md). Never leave the cadence to memory. Keep skill-relative links in this playbook body. Do not copy them into the plan file.
 
 ````markdown
 # <Program> plan
@@ -34,15 +34,14 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 ### Arm the program
 
 - [ ] State the protocol and this plan to the operator, then stop. Start execution only on the operator's explicit go.
-- [ ] On the operator's go, write the program objective into the standing orders and your todolist with this exact text. "<The plan path, the PR ids in order, the verification rule, who merges, and the done condition.>"
 - [ ] Read these from the installed plugin at program start. Re-read them at every tick.
   - [ ] `skills/poteto-mode/playbooks/<execution playbook>.md`
   - [ ] `skills/swarm/SKILL.md`
   - [ ] `<driver skill path>`
   - [ ] `skills/poteto-mode/playbooks/opening-a-pr.md`
   - [ ] `skills/<each other leaf skill the program uses>/SKILL.md`
-- [ ] Arm the 30-minute audit tick as a real cadence. Never leave the cadence to memory.
-- [ ] Use this tick prompt, verbatim. "Re-read the execution playbook from the installed plugin and the standing orders. Audit the operation against both and fix drift in this tick. Probe every active lane and judge progress by side effects only. Stand down a lane only on affirmative failure evidence, and dispatch its replacement in the same tick. Then post a short status message to the operator in chat only when the audit found a tracked change that no earlier status message reported, such as a PR opened, a code-ready head, a round launched or closed, a verdict, a merge, a stuck agent and the action taken, a blocker added or cleared, or a decision only the operator can make. Name every such change and nothing else. Do not repeat a table, the merged list, or an unchanged blocker. If the audit found none, end the turn with no reply text. Either way, log this tick's row in your decision trail. The row names the items reported, or none."
+- [ ] On the operator's go, arm the hourly audit tick as a real cadence with the tick prompt below. Never leave the cadence to memory.
+- [ ] Use this tick prompt, verbatim. "Re-read the execution playbook from the installed plugin. Audit the operation against it and fix drift in this tick. Probe every active lane and judge progress by side effects only. Stand down a lane only on affirmative failure evidence, and dispatch its replacement in the same tick. Then post a short status message to the operator in chat only when the audit found a tracked change that no earlier status message reported, such as a PR opened, a code-ready head, a round launched or closed, a verdict, a merge, a stuck agent and the action taken, a blocker added or cleared, or a decision only the operator can make. Name every such change and nothing else. Do not repeat a table, the merged list, or an unchanged blocker. If the audit found none, end the turn with no reply text. Either way, log this tick's row in your decision trail. The row names the items reported, or none."
 - [ ] On the operator's hold or stand-down, send every owner a zero-writes order at once.
 
 ### Spawn owners

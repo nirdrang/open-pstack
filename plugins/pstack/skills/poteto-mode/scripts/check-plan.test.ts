@@ -138,7 +138,7 @@ describe("check-plan", () => {
     for (const item of FORBIDDEN_FENCE) {
       expect(skeleton.includes(item), item).toBe(false);
     }
-    expect(skeleton).toContain("30-minute");
+    expect(skeleton).toContain("hourly");
     expect(skeleton).toContain(CONTRACT.laneSentence);
   });
 

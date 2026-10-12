@@ -8,9 +8,6 @@ Closes #
 - [ ] Bun tests, strict typecheck, static invariants, and plugin validation pass.
 - [ ] The exact candidate is installed in every affected harness.
 - [ ] The changed behavior passes from each real user surface.
-- [ ] The installed version, action, and observed result appear below.
+- [ ] The `live-gate` status on the final head links the evidence comment (installed version, surface, action, observed result).
 
-Live evidence:
-
-
-A pull request without live evidence remains a draft. Do not merge, tag, release, or roll it out.
+Mergify does not queue a pull request without `live-gate` on its exact head. Do not merge, tag, release, or roll out without it.

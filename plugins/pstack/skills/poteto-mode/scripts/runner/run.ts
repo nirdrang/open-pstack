@@ -4,11 +4,13 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  realpathSync,
   statSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import {
   invocationCommand,
   preflightCommand,
@@ -21,9 +23,11 @@ import {
   opencodeModelListing,
   parseOpencodeExport,
   parseProviderOutput,
+  ProviderResultError,
   reportedModelMatches,
 } from "./parse-output.ts";
 import type {
+  AccessMode,
   ParsedOutput,
   Provider,
   ReceiptStatus,
@@ -64,11 +68,9 @@ function evidence(value: string): string {
   return value.trim().slice(0, ERROR_EVIDENCE_LIMIT);
 }
 
-// A provider's terminal event sits at the end of its stream, so a rejected
-// result is explained by the tail, never the head.
-function tailEvidence(value: string): string {
-  const trimmed = value.trim();
-  return trimmed.slice(Math.max(0, trimmed.length - ERROR_EVIDENCE_LIMIT));
+// A provider's terminal event ends its stream, so malformed output keeps the tail.
+function trailingEvidence(value: string): string {
+  return value.trim().slice(-ERROR_EVIDENCE_LIMIT);
 }
 
 function keepStream(path: string, content: string): string | undefined {
@@ -87,15 +89,36 @@ function reserve(path: string): void {
   closeSync(descriptor);
 }
 
-function reserveOutputs(options: RunnerOptions): void {
-  if (options.outputPath === options.receiptPath) {
-    throw new UsageError("output and receipt paths must differ");
+interface ModelStreams {
+  readonly stdout: number;
+  readonly stderr: number;
+}
+
+function modelStreamPaths(receiptPath: string): { stdoutPath: string; stderrPath: string } {
+  return { stdoutPath: `${receiptPath}.stdout`, stderrPath: `${receiptPath}.stderr` };
+}
+
+function reserveOutputs(options: RunnerOptions): ModelStreams {
+  const { stdoutPath, stderrPath } = modelStreamPaths(options.receiptPath);
+  const paths = [options.outputPath, options.receiptPath, stdoutPath, stderrPath];
+  const resolved = paths.map((path) => resolve(path));
+  if (new Set(resolved).size !== paths.length || resolved.includes(resolve(options.promptPath))) {
+    throw new UsageError("prompt, output, receipt, and stream paths must be distinct");
   }
-  reserve(options.outputPath);
+  const created: string[] = [];
+  let stdout: number | null = null;
   try {
-    reserve(options.receiptPath);
+    for (const path of paths.slice(0, 2)) {
+      reserve(path);
+      created.push(path);
+    }
+    stdout = openSync(stdoutPath, "wx", 0o600);
+    created.push(stdoutPath);
+    const stderr = openSync(stderrPath, "wx", 0o600);
+    return { stdout, stderr };
   } catch (error) {
-    removeIfExists(options.outputPath);
+    if (stdout !== null) closeSync(stdout);
+    for (const path of created) removeIfExists(path);
     throw error;
   }
 }
@@ -154,17 +177,51 @@ const CLAUDE_IDENTITY = [
   "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
 ] as const;
 
+const GROK_ENVIRONMENT = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "LANG",
+  "TERM",
+  "COLORTERM",
+  "TZ",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+]);
+
+const GROK_ENVIRONMENT_PREFIXES = ["LC_", "XDG_", "GROK_", "XAI_"] as const;
+
+// A Grok lane's shell can read every variable it inherits in both access modes, so it gets
+// only what grok needs to start, authenticate and reach the network.
+// A Claude writer's git must find its repository from the cwd, as discovery's git did, so
+// an inherited GIT_DIR or GIT_COMMON_DIR cannot route it to an undenied git directory.
 export function childEnvironment(
   provider: Provider,
+  mode: AccessMode,
   source: NodeJS.ProcessEnv = process.env
 ): NodeJS.ProcessEnv {
+  if (provider === "grok") {
+    return Object.fromEntries(Object.entries(source).filter(([key]) =>
+      GROK_ENVIRONMENT.has(key) || GROK_ENVIRONMENT_PREFIXES.some((prefix) => key.startsWith(prefix))
+    ));
+  }
   const result = { ...source };
-  const remove = provider === "claude"
-    ? CODEX_IDENTITY
-    : provider === "codex"
-      ? CLAUDE_IDENTITY
-      : [...CODEX_IDENTITY, ...CLAUDE_IDENTITY];
-  for (const key of remove) delete result[key];
+  for (const key of provider === "claude" ? CODEX_IDENTITY : CLAUDE_IDENTITY) delete result[key];
+  if (provider === "claude" && mode === "isolated-write") {
+    for (const key of Object.keys(result)) if (key.startsWith("GIT_")) delete result[key];
+  }
   return result;
 }
 
@@ -198,7 +255,7 @@ interface StreamCapture {
   cancel(): Promise<void>;
 }
 
-function captureStream(stream: ReadableStream<Uint8Array>): StreamCapture {
+function captureStream(stream: ReadableStream<Uint8Array>, descriptor?: number): StreamCapture {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let text = "";
@@ -209,6 +266,12 @@ function captureStream(stream: ReadableStream<Uint8Array>): StreamCapture {
       while (true) {
         const next = await reader.read();
         if (next.done) break;
+        if (descriptor !== undefined) {
+          let offset = 0;
+          while (offset < next.value.byteLength) {
+            offset += writeSync(descriptor, next.value, offset, next.value.byteLength - offset);
+          }
+        }
         text += decoder.decode(next.value, { stream: true });
       }
       text += decoder.decode();
@@ -247,7 +310,8 @@ async function runProcess(
   env: NodeJS.ProcessEnv,
   prompt: string,
   deadlineAt: number | null,
-  cancellation: RunCancellation
+  cancellation: RunCancellation,
+  streamFiles?: ModelStreams
 ): Promise<ProcessResult> {
   const child = Bun.spawn([executable, ...spec.args], {
     cwd,
@@ -257,8 +321,8 @@ async function runProcess(
     stderr: "pipe",
   });
   let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
-  const stdoutCapture = captureStream(child.stdout);
-  const stderrCapture = captureStream(child.stderr);
+  const stdoutCapture = captureStream(child.stdout, streamFiles?.stdout);
+  const stderrCapture = captureStream(child.stderr, streamFiles?.stderr);
   const streams = Promise.all([stdoutCapture.result, stderrCapture.result]);
   const exited = child.exited.then((exitCode): ProcessEvent => ({
     kind: "exited",
@@ -289,7 +353,7 @@ async function runProcess(
       stdin.end();
     }
 
-    const completions = [exited, cancelled];
+    const completions = [exited, cancelled, streams.then(() => exited)];
     if (deadline !== null) completions.push(deadline);
     const first = await Promise.race(completions);
 
@@ -375,6 +439,134 @@ async function waitForGrokPreflightRetry(
   }
 }
 
+type SharedGitDiscovery =
+  | { readonly kind: "found"; readonly sharedGitDir: string | null }
+  | {
+    readonly kind: "refused";
+    readonly status: ReceiptStatus;
+    readonly message: string;
+    readonly evidence: string;
+    readonly exitCode: number | null;
+    readonly signal: string | null;
+  };
+
+// Older git has no --path-format, so a relative answer is resolved against the cwd.
+const GIT_COMMON_DIR: CommandSpec = {
+  command: "git",
+  args: ["rev-parse", "--git-common-dir"],
+  stdin: "none",
+};
+
+function within(parent: string, child: string): boolean {
+  const path = relative(parent, child);
+  return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+}
+
+// A linked worktree keeps its refs, objects and index in a git directory outside the cwd. Git
+// itself finds that directory, from the cwd and with the writer's environment, so the deny matches
+// what the writer's own git will use. Returns null for a non-repository or a directory the cwd
+// contains, and refuses whatever cannot be denied literally: denyWrite entries are globs that
+// cannot be escaped, and Claude Code 2.1.288 on Linux drops entries containing * ? [ ].
+export async function discoverSharedGitDir(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  deadlineAt: number | null,
+  cancellation: RunCancellation
+): Promise<SharedGitDiscovery> {
+  const refuse = (
+    status: ReceiptStatus,
+    message: string,
+    result: ProcessResult | null = null
+  ): SharedGitDiscovery => ({
+    kind: "refused",
+    status,
+    message,
+    evidence: result === null ? "" : evidence(`${result.stdout}\n${result.stderr}`),
+    exitCode: result?.exitCode ?? null,
+    signal: result?.signal ?? null,
+  });
+  const git = Bun.which(GIT_COMMON_DIR.command, { PATH: env.PATH, cwd });
+  if (git === null) {
+    return refuse(
+      "unavailable-cli",
+      "git executable not found, so the shared git directory cannot be found"
+    );
+  }
+  // The C locale keeps git's "not a git repository" message in the English the check reads.
+  const result = await runProcess(
+    git,
+    GIT_COMMON_DIR,
+    cwd,
+    { ...env, LC_ALL: "C" },
+    "",
+    deadlineAt,
+    cancellation
+  );
+  if (result.cancelledBy !== null) {
+    return refuse(
+      "cancelled",
+      `launcher received ${result.cancelledBy} during shared git directory discovery`,
+      result
+    );
+  }
+  if (result.timedOut) {
+    return refuse("timed-out", "shared git directory discovery timed out", result);
+  }
+  // Only git's "searched and found nothing" answer means no repository. A .git that names a
+  // missing or malformed git directory fails with other wording and is refused.
+  const notARepository =
+    /^fatal: not a git repository \(or any (of the parent directories|parent up to mount point)/m;
+  if (result.exitCode === 128 && notARepository.test(result.stderr)) {
+    return { kind: "found", sharedGitDir: null };
+  }
+  const reported = result.stdout.replace(/\n$/, "");
+  if (result.exitCode !== 0 || reported.length === 0) {
+    return refuse(
+      "child-failed",
+      `git rev-parse --git-common-dir exited with status ${result.exitCode}`,
+      result
+    );
+  }
+  let root: string;
+  let shared: string;
+  try {
+    root = realpathSync(cwd);
+    shared = realpathSync(resolve(root, reported));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return refuse("child-failed", `cannot resolve the shared git directory: ${message}`, result);
+  }
+  if (within(root, shared)) return { kind: "found", sharedGitDir: null };
+  if (within(shared, root)) {
+    return refuse(
+      "child-failed",
+      `cwd ${JSON.stringify(root)} is inside its shared git directory ${JSON.stringify(shared)}, ` +
+        "so the Claude writer sandbox cannot deny that directory without denying the cwd",
+      result
+    );
+  }
+  if (/[*?[\]{}\u0000-\u001f\u007f]/.test(shared)) {
+    return refuse(
+      "child-failed",
+      `shared git directory ${JSON.stringify(shared)} contains a glob or control character, ` +
+        "so the Claude writer sandbox cannot deny it literally",
+      result
+    );
+  }
+  return { kind: "found", sharedGitDir: shared };
+}
+
+// grok names its configured default above the list even when the account cannot use it,
+// so only the lines under the header count.
+function grokModelAvailable(value: string, model: string): boolean {
+  const lines = value.split("\n");
+  const header = lines.findIndex((line) => /^\s*Available models:/.test(line));
+  if (header < 0) return false;
+  const escaped = model.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const listed = new RegExp(`(^|[^A-Za-z0-9_.-])${escaped}($|[^A-Za-z0-9_.-])`);
+  return lines.slice(header + 1).some((line) => listed.test(line));
+}
+
 function preflightPassed(options: RunnerOptions, result: ProcessResult): boolean {
   if (result.exitCode !== 0 || result.timedOut) return false;
   const combined = `${result.stdout}\n${result.stderr}`;
@@ -394,7 +586,10 @@ function preflightPassed(options: RunnerOptions, result: ProcessResult): boolean
     case "codex":
       return /logged in/i.test(combined);
     case "grok":
-      return /logged in/i.test(combined) && combined.includes(options.model);
+      return unavailableStatus(combined) === "child-failed"
+        && /\blogged in\b|\bYou are using XAI_API_KEY\.|\bYou are authenticated via deployment key\./i
+          .test(combined)
+        && grokModelAvailable(combined, options.model);
     case "opencode":
       return opencodeModelListing(result.stdout, options.model, options.effort).kind === "listed";
   }
@@ -429,14 +624,19 @@ function failedPreflightEvidence(options: RunnerOptions, result: ProcessResult):
   }
 }
 
+// Only preflight output is read for authentication; a failed model call's output can quote
+// the child's own work.
 function unavailableStatus(value: string): ReceiptStatus {
-  if (/not logged in|unauthenticated|authentication|sign in|login required/i.test(value)) {
+  if (/not logged in|not authenticated|unauthenticated|authentication|sign in|login required/i.test(value)) {
     return "unauthenticated";
   }
-  if (/model.{0,40}(not found|unknown|unavailable|unsupported|not supported|invalid)|invalid.{0,20}model/i.test(value)) {
-    return "unavailable-model";
-  }
-  return "child-failed";
+  return modelFailureStatus(value);
+}
+
+function modelFailureStatus(value: string): "unavailable-model" | "child-failed" {
+  return /model.{0,40}(not found|unknown|unavailable|unsupported|not supported|invalid)|invalid.{0,20}model/i.test(value)
+    ? "unavailable-model"
+    : "child-failed";
 }
 
 function preflightFailureStatus(
@@ -447,7 +647,7 @@ function preflightFailureStatus(
   const status = unavailableStatus(value);
   if (status !== "child-failed") return status;
   if (provider === "opencode") return "unavailable-model";
-  return provider === "grok" && !value.includes(model)
+  return provider === "grok" && !grokModelAvailable(value, model)
     ? "unavailable-model"
     : "unauthenticated";
 }
@@ -523,7 +723,7 @@ function modelProof(
 
 function completeReceipt(
   options: RunnerOptions,
-  partial: Omit<RunnerReceipt, "schemaVersion" | "parent" | "provider" | "model" | "effort" | "mode" | "cwd" | "promptPath" | "outputPath">
+  partial: Omit<RunnerReceipt, "schemaVersion" | "parent" | "provider" | "model" | "effort" | "mode" | "cwd" | "promptPath" | "outputPath" | "stdoutPath" | "stderrPath">
 ): RunnerReceipt {
   return {
     schemaVersion: 1,
@@ -535,6 +735,7 @@ function completeReceipt(
     cwd: options.cwd,
     promptPath: options.promptPath,
     outputPath: options.outputPath,
+    ...modelStreamPaths(options.receiptPath),
     ...partial,
   };
 }
@@ -592,11 +793,14 @@ async function executeLane(
   deadlineAt: number | null,
   invocation: CommandSpec,
   preflight: CommandSpec,
-  progress: LaneProgress
+  progress: LaneProgress,
+  streamFiles: ModelStreams
 ): Promise<RunResult> {
   const startedAt = new Date(started).toISOString();
   const prompt = readFileSync(options.promptPath, "utf8");
-  const env = childEnvironment(options.provider);
+  const parentNetworkDisabled = options.parent === "codex"
+    && process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1";
+  const env = childEnvironment(options.provider, options.mode);
   const executable = Bun.which(invocation.command, {
     PATH: env.PATH,
     cwd: options.cwd,
@@ -677,6 +881,38 @@ async function executeLane(
     removeIfExists(options.outputPath);
     writeReceipt(options.receiptPath, receipt);
     return { exitCode: statusExitCode(receipt.status), receipt };
+  }
+
+  if (options.provider === "claude" && options.mode === "isolated-write") {
+    const discovery = await discoverSharedGitDir(options.cwd, env, deadlineAt, cancellation);
+    if (discovery.kind === "refused") {
+      const completed = Date.now();
+      receipt = completeReceipt(options, {
+        status: discovery.status,
+        startedAt,
+        completedAt: new Date(completed).toISOString(),
+        elapsedMs: completed - started,
+        executable,
+        preflight: discovery.status === "cancelled" || discovery.status === "timed-out"
+          ? { ...preflightState, status: discovery.status }
+          : preflightState,
+        argv: [executable, ...invocation.args],
+        exitCode: discovery.exitCode,
+        signal: discovery.signal,
+        reportedModel: null,
+        modelVerified: false,
+        modelEvidence: null,
+        sessionId: null,
+        usage: null,
+        costUsd: null,
+        error: { message: discovery.message, evidence: discovery.evidence },
+      });
+      removeIfExists(options.outputPath);
+      writeReceipt(options.receiptPath, receipt);
+      return { exitCode: statusExitCode(discovery.status), receipt };
+    }
+    invocation = invocationCommand(options, discovery.sharedGitDir);
+    progress.argv = [executable, ...invocation.args];
   }
 
   const preflightExecutable = executable;
@@ -811,7 +1047,8 @@ async function executeLane(
     env,
     prompt,
     deadlineAt,
-    cancellation
+    cancellation,
+    streamFiles
   );
   const completed = Date.now();
   const base = {
@@ -825,23 +1062,43 @@ async function executeLane(
     signal: result.signal,
   } as const;
 
-  if (result.cancelledBy !== null || result.timedOut || result.exitCode !== 0) {
+  let parsed: ParsedOutput | null = null;
+  let parseError: unknown = null;
+  if (result.cancelledBy === null && !result.timedOut
+      && (result.exitCode === 0 || (options.provider === "grok" && result.stdout.trim().length > 0))) {
+    try {
+      parsed = parseProviderOutput(options.provider, result.stdout, result.stderr, options.model);
+    } catch (error) {
+      parseError = error;
+    }
+  }
+  const providerFailure = parseError instanceof ProviderResultError ? parseError : null;
+  const metadata = providerFailure?.metadata ?? (result.exitCode === 0 ? parsed : null);
+  if (result.cancelledBy !== null || result.timedOut || providerFailure !== null
+      || result.exitCode !== 0) {
     const rawFailureEvidence = `${result.stderr}\n${result.stdout}`;
-    const failureEvidence = evidence(rawFailureEvidence);
     const status: ReceiptStatus = result.cancelledBy !== null
       ? "cancelled"
       : result.timedOut
         ? "timed-out"
-        : unavailableStatus(rawFailureEvidence);
+        : providerFailure?.status ?? modelFailureStatus(rawFailureEvidence);
+    const sandboxHint = status === "child-failed" && providerFailure === null && parentNetworkDisabled
+      ? "likely cause: Codex parent sandbox has network disabled; see provider-dispatch.md#host-and-parent-prerequisites"
+      : null;
+    const failureEvidence = evidence(providerFailure !== null
+      ? `${providerFailure.message}\n${rawFailureEvidence}`
+      : sandboxHint !== null
+        ? `${sandboxHint}\n${rawFailureEvidence}`
+        : rawFailureEvidence);
     receipt = completeReceipt(options, {
       ...base,
       status,
-      reportedModel: null,
-      modelVerified: false,
-      modelEvidence: null,
-      sessionId: null,
-      usage: null,
-      costUsd: null,
+      ...(metadata === null
+        ? { reportedModel: null, modelVerified: false, modelEvidence: null }
+        : modelProof(options.provider, options.model, metadata.reportedModel)),
+      sessionId: metadata?.sessionId ?? null,
+      usage: metadata?.usage ?? null,
+      costUsd: metadata?.costUsd ?? null,
       error: {
         message: result.cancelledBy !== null
           ? result.signal === result.cancelledBy
@@ -849,7 +1106,7 @@ async function executeLane(
             : `launcher received ${result.cancelledBy} after child exited`
           : result.timedOut
             ? `launcher exceeded the explicit ${options.timeoutMs}ms deadline`
-            : `child exited with status ${result.exitCode}`,
+            : providerFailure?.message ?? `child exited with status ${result.exitCode}${sandboxHint === null ? "" : `; ${sandboxHint}`}`,
         evidence: failureEvidence,
       },
     });
@@ -859,19 +1116,9 @@ async function executeLane(
   }
 
   try {
-    const parsed = await verifiedOutput(
-      options,
-      parseProviderOutput(
-        options.provider,
-        result.stdout,
-        result.stderr,
-        options.model
-      ),
-      executable,
-      env,
-      deadlineAt,
-      cancellation
-    );
+    if (parseError !== null) throw parseError;
+    if (parsed === null) throw new Error("provider result was not parsed");
+    parsed = await verifiedOutput(options, parsed, executable, env, deadlineAt, cancellation);
     const proof = modelProof(
       options.provider,
       options.model,
@@ -911,7 +1158,7 @@ async function executeLane(
       costUsd: null,
       error: {
         message,
-        evidence: tailEvidence(`${result.stderr}\n${result.stdout}`),
+        evidence: trailingEvidence(`${result.stderr}\n${result.stdout}`),
         stdoutPath: keepStream(`${options.receiptPath}.stdout`, result.stdout),
         stderrPath: keepStream(`${options.receiptPath}.stderr`, result.stderr),
       },
@@ -991,8 +1238,9 @@ export async function runLane(
     argv: [invocation.command, ...invocation.args],
   };
   const cancellation = installRunCancellation();
+  let streamFiles: ModelStreams | null = null;
   try {
-    reserveOutputs(options);
+    streamFiles = reserveOutputs(options);
     try {
       return await executeLane(
         options,
@@ -1001,7 +1249,8 @@ export async function runLane(
         deadlineAt,
         invocation,
         preflight,
-        progress
+        progress,
+        streamFiles
       );
     } catch (error) {
       const completed = Date.now();
@@ -1046,6 +1295,10 @@ export async function runLane(
     }
   } finally {
     cancellation.dispose();
+    if (streamFiles !== null) {
+      closeSync(streamFiles.stdout);
+      closeSync(streamFiles.stderr);
+    }
   }
 }
 

@@ -53,6 +53,19 @@ describe("invocationCommand", () => {
     expect(spec.args).not.toContain("danger-full-access");
   });
 
+  it("passes the ultra effort to Codex unchanged", () => {
+    const spec = invocationCommand(
+      options({ model: "gpt-6.1-sol", effort: "ultra" })
+    );
+    expect(spec.args.slice(0, 5)).toEqual([
+      "exec",
+      "--model",
+      "gpt-6.1-sol",
+      "--config",
+      'model_reasoning_effort="ultra"',
+    ]);
+  });
+
   it("passes Claude model, effort, permissions, and no-recursion controls", () => {
     const spec = invocationCommand(
       options({
@@ -100,7 +113,7 @@ describe("invocationCommand", () => {
       "--reasoning-effort",
       "xhigh",
       "--permission-mode",
-      "plan",
+      "auto",
       "--sandbox",
       "read-only",
       "--tools",
@@ -191,7 +204,7 @@ describe("invocationCommand", () => {
     expect(grok.args).toEqual(
       expect.arrayContaining([
         "--permission-mode",
-        "acceptEdits",
+        "auto",
         "--sandbox",
         "workspace",
         "--tools",
@@ -211,6 +224,33 @@ describe("invocationCommand", () => {
         "Read,Write,Edit,Grep,Glob,Bash",
       ])
     );
+  });
+
+  it("sandboxes Claude writers and denies a shared git directory when one is supplied", () => {
+    const writer = options({ provider: "claude", model: "fable", mode: "isolated-write" });
+    const sandbox = {
+      enabled: true,
+      autoAllowBashIfSandboxed: true,
+      allowUnsandboxedCommands: false,
+      failIfUnavailable: true,
+    };
+    const settings = (args: readonly string[]): unknown =>
+      JSON.parse(args[args.indexOf("--settings") + 1] ?? "");
+
+    expect(settings(invocationCommand(writer).args)).toEqual({ sandbox });
+    expect(settings(invocationCommand(writer, "/repo/.git").args)).toEqual({
+      sandbox: { ...sandbox, filesystem: { denyWrite: ["/repo/.git"] } },
+    });
+    expect(settings(invocationCommand(writer, "/srv/my repo/.git").args)).toEqual({
+      sandbox: { ...sandbox, filesystem: { denyWrite: ["/srv/my repo/.git"] } },
+    });
+
+    const reader = invocationCommand(
+      options({ provider: "claude", model: "fable" }),
+      "/repo/.git"
+    );
+    expect(reader.args).toEqual(expect.arrayContaining(["--permission-mode", "plan"]));
+    expect(reader.args).not.toContain("--settings");
   });
 
   it("covers low, medium, and high for every external provider", () => {
